@@ -94,15 +94,19 @@ def find_duplicates_by_perf_length(df):
     
     # Group by API10 and find which wells should be kept
     def keep_best_well(group):
+        # Debug: Show group size for groups with 3+ wells
+        if len(group) > 2:
+            print(f"  Processing API10 {group['API10'].iloc[0]} with {len(group)} wells")
+        
         # Convert Perf Lateral Length to numeric, handling any non-numeric values
         group["Perf Lateral Length"] = pd.to_numeric(group["Perf Lateral Length"], errors='coerce')
         
         # Convert Last Prod Date Monthly to datetime, handling any non-date values
         group["Last Prod Date Monthly"] = pd.to_datetime(group["Last Prod Date Monthly"], errors='coerce')
         
-        # If all Perf Lateral Length values are NaN, keep all rows (no preference)
+        # If all Perf Lateral Length values are NaN, keep only the first row (arbitrary choice)
         if group["Perf Lateral Length"].isna().all():
-            return group
+            return group.head(1)
         
         # If all Last Prod Date values are NaN, fall back to Perf Lateral Length
         if group["Last Prod Date Monthly"].isna().all():
@@ -116,12 +120,12 @@ def find_duplicates_by_perf_length(df):
                     wells_with_max_length["API 14"].astype(str).str[-4:] != "0000"
                 ]
                 
-                # If there are wells that don't end in "0000", keep those
+                # If there are wells that don't end in "0000", keep only the first one
                 if len(wells_not_ending_0000) > 0:
-                    return wells_not_ending_0000
+                    return wells_not_ending_0000.head(1)
                 else:
-                    # If all end in "0000", keep all (no preference)
-                    return wells_with_max_length
+                    # If all end in "0000", keep only the first one (arbitrary choice)
+                    return wells_with_max_length.head(1)
             else:
                 return wells_with_max_length
         
@@ -136,25 +140,25 @@ def find_duplicates_by_perf_length(df):
             max_length = wells_with_latest_date["Perf Lateral Length"].max()
             wells_with_max_length = wells_with_latest_date[wells_with_latest_date["Perf Lateral Length"] == max_length]
             
-            # If multiple wells have the same max length, prefer the one that doesn't end in "0000"
+            # If multiple wells have the same max length AND same date, prefer the one that doesn't end in "0000"
             if len(wells_with_max_length) > 1:
                 # Check which wells don't end in "0000"
                 wells_not_ending_0000 = wells_with_max_length[
                     wells_with_max_length["API 14"].astype(str).str[-4:] != "0000"
                 ]
                 
-                # If there are wells that don't end in "0000", keep those
+                # If there are wells that don't end in "0000", keep only the first one
                 if len(wells_not_ending_0000) > 0:
-                    return wells_not_ending_0000
+                    return wells_not_ending_0000.head(1)
                 else:
-                    # If all end in "0000", keep all (no preference)
-                    return wells_with_max_length
+                    # If all end in "0000", keep only the first one (arbitrary choice)
+                    return wells_with_max_length.head(1)
             else:
                 return wells_with_max_length
         else:
             return wells_with_latest_date
-    
-    # Apply to duplicates - keep the best well for each API10
+     
+     # Apply to duplicates - keep the best well for each API10
     kept_wells = duplicates.groupby("API10", group_keys=False).apply(keep_best_well).reset_index(drop=True)
     
     # Find all rows that should be removed (duplicates minus the ones we kept)
@@ -170,6 +174,32 @@ def find_duplicates_by_perf_length(df):
     # Clean up the temporary columns
     wells_to_remove = wells_to_remove.drop(columns=['composite_key', 'API10'])
     kept_wells = kept_wells.drop(columns=['composite_key', 'API10'])
+    
+    # Final validation: ensure no duplicate API10s remain in kept_wells
+    kept_wells['API10'] = kept_wells['API 14'].astype(str).str[:10]
+    if kept_wells['API10'].duplicated().any():
+        print("  WARNING: Duplicate API10s found in kept wells! This should not happen.")
+        print("  Removing duplicates by keeping only the first occurrence...")
+        kept_wells = kept_wells.drop_duplicates(subset=['API10'], keep='first')
+        kept_wells = kept_wells.drop(columns=['API10'])
+    else:
+        kept_wells = kept_wells.drop(columns=['API10'])
+    
+    # Format API columns as numbers for output
+    def format_api_columns(df):
+        """Format API columns as numbers for clean output."""
+        # Convert API 14 to numeric (remove any non-numeric characters first)
+        df['API 14'] = pd.to_numeric(df['API 14'].astype(str).str.replace(r'[^\d]', '', regex=True), errors='coerce')
+        
+        # Create API10 and API12 columns as numbers
+        df['API10'] = pd.to_numeric(df['API 14'].astype(str).str[:10], errors='coerce')
+        df['API12'] = pd.to_numeric(df['API 14'].astype(str).str[:12], errors='coerce')
+        
+        return df
+    
+    # Apply formatting to both output dataframes
+    kept_wells = format_api_columns(kept_wells)
+    wells_to_remove = format_api_columns(wells_to_remove)
     
     return kept_wells, wells_to_remove
 
@@ -202,7 +232,7 @@ def main():
     print("This script will find duplicate wells and keep the best one for each API10:")
     print("1. First priority: Wells with the most recent Last Prod Date Monthly")
     print("2. Second priority: Among wells with same date, highest Perf Lateral Length")
-    print("3. Third priority: Among wells with same length, prefer API14 NOT ending in '0000'")
+    print("3. Third priority: Among wells with same date AND length, prefer API14 NOT ending in '0000'")
     print()
     
     # Step 1: Load well data
@@ -233,11 +263,11 @@ def main():
     removed_filename = f'wells_to_remove_{project_name}.csv'
     
     # Save wells that should be kept
-    kept_wells.to_csv(kept_filename, index=False)
+    kept_wells.to_csv(kept_filename, index=False, float_format='%.0f')
     print(f"Saved {len(kept_wells)} wells to keep: {kept_filename}")
     
     # Save wells that should be removed
-    wells_to_remove.to_csv(removed_filename, index=False)
+    wells_to_remove.to_csv(removed_filename, index=False, float_format='%.0f')
     print(f"Saved {len(wells_to_remove)} wells to remove: {removed_filename}")
     
     # Step 4: Summary
@@ -257,7 +287,7 @@ def main():
     print("removed from your project, keeping only the best well for each API10:")
     print("- Priority 1: Most recent Last Prod Date Monthly")
     print("- Priority 2: Highest Perf Lateral Length (if dates are equal)")
-    print("- Priority 3: API14 NOT ending in '0000' (if lengths are equal)")
+    print("- Priority 3: API14 NOT ending in '0000' (if dates AND lengths are equal)")
 
 if __name__ == "__main__":
     main()
